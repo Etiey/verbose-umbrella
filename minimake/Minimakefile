@@ -1,0 +1,49 @@
+CC = gcc
+CFLAGS = -std=c99 -pedantic -Werror -Wall -Wextra -Wvla
+
+# Directories
+SRC_DIR = src
+
+# Source files and objects
+MAIN_SRC = src/main.c
+MAIN_OBJ = main.o
+
+# Target executable
+TARGET = minimake
+
+# Default target - builds minimake
+all: $(TARGET)
+
+# Compile main.c to object file
+main.o: $(MAIN_SRC)
+	$(CC) $(CFLAGS) -c $(MAIN_SRC) -o main.o
+
+# Link object files to create minimake executable
+$(TARGET): $(MAIN_OBJ)
+	$(CC) $(CFLAGS) $(MAIN_OBJ) -o $(TARGET)
+
+# Run the test suite
+check: $(TARGET)
+	echo Running minimake tests...
+
+# Clean all build artifacts
+clean:
+	echo Cleaning build artifacts...
+	rm -f main.o
+	rm -f $(TARGET)
+	echo Clean complete.
+
+# Rebuild everything from scratch
+rebuild: clean all
+
+# Display build information
+info:
+	echo ===== Minimake Build Information =====
+	echo Compiler: $(CC)
+	echo Flags: $(CFLAGS)
+	echo Source: $(MAIN_SRC)
+	echo Object: $(MAIN_OBJ)
+	echo Target: $(TARGET)
+
+# Mark phony targets
+.PHONY: all check clean rebuild info
