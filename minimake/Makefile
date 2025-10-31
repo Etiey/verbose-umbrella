@@ -1,35 +1,51 @@
+# Compiler and flags
 CC = gcc
 CFLAGS = -std=c99 -pedantic -Werror -Wall -Wextra -Wvla
+
+# Directories
 SRC_DIR = src
-TEST_DIR = tests
+OBJ_DIR = obj
 
-#Source files and objects
-MAIN_SRC = $(SRC_DIR)/main.c
-MAIN_OBJ = main.o
+MINI = minimake
 
-#Target executable
-TARGET = minimake
+# Source files
+SRCS = $(SRC_DIR)/main.c \
+       $(SRC_DIR)/parser.c \
+       $(SRC_DIR)/rules.c \
+       $(SRC_DIR)/variables.c \
+       $(SRC_DIR)/executor.c \
+       $(SRC_DIR)/utils.c
 
-#Default target
-all: $(TARGET)
+# Object files (derived from source files)
+OBJS = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
-#Compile object files
-main.o: $(MAIN_SRC)
-	$(CC) $(CFLAGS) -c $(MAIN_SRC) -o main.o
+# Default target: build the minimake binary
+all: $(MINI)
 
-#Link executable
-$(TARGET): $(MAIN_OBJ)
-	$(CC) $(CFLAGS) $(MAIN_OBJ) -o $(TARGET)
+# Link object files to create the binary
+$(MINI): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
 
-#Run tests
-check: $(TARGET)
+# Compile source files to object files
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Create object directory if it doesn't exist
+$(OBJ_DIR):
+	mkdir -p $(OBJ_DIR)
+
+# Run the test suite
+check:
 	echo "Running tests..."
-	cd $(TEST_DIR) && ./run_tests.sh
+	if [ -d tests ] && [ -f tests/run_tests.sh ]; then \
+		cd tests && ./run_tests.sh; \
+	else \
+		echo "No tests found in tests/ directory"; \
+	fi
 
-#Clean build artifacts
+# Clean up the generated files
 clean:
-	rm -f main.o $(TARGET)
+	rm -rf $(OBJ_DIR) $(MINI)
 
-#Mark phony targets
+# Phony targets 
 .PHONY: all check clean
-

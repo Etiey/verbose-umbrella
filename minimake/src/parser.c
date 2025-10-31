@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "parser.h"
 
 #include <ctype.h>
@@ -5,230 +7,181 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "outils.h"
+#include "rules.h"
+#include "utils.h"
+#include "variables.h"
 
-/*Helper to expand variables in a string*/
-char *expand_variables(struct makefile *mf, const char *str)
-{
-    return str_dup(str);
-}
+/*Store parsed rules for pretty-print*/
+static rule_t **parsed_rules = NULL;
+static size_t parsed_count = 0;
 
-static int is_comment_line(const char *line)
+/*Remove comments from a line (everything after #)*/
+static char *remove_comment(char *line)
 {
-    const char *p = line;
-    while (isblank(*p))
+    char *hash = strchr(line, '#');
+    if (hash)
     {
-        p++;
+        *hash = '\0';
     }
-    return *p == '#' || *p == '\0' || *p == '\n';
+    return line;
 }
 
-static int is_recipe_line(const char *line)
+/*Check if line is a rule (contains : before =)*/
+static int is_rule_line(const char *line)
 {
-    return line[0] == '\t';
-}
-
-static int find_first_unquoted(const char *line, char c)
-{
-    int i = 0;
-    while (line[i])
+    const char *colon = strchr(line, ':');
+    const char *equals = strchr(line, '=');
+    if (!colon)
     {
-        if (line[i] == c)
-        {
-            return i;
-        }
-        i++;
+        return 0; /*No colon = not a rule*/
     }
-    return -1;
+    if (!equals)
+    {
+        return 1; /*Colon but no = = rule*/
+    }
+    return colon < equals; /*: before = = rule*/
 }
 
-int parse_makefile(struct makefile *mf, const char *filename, int is_first)
+/*Parse a variable definition (VAR = value)*/
+static void parse_variable_def(char *line)
 {
-    FILE *fp = fopen(filename, "r");
+    char *equals = strchr(line, '=');
+    if (!equals)
+    {
+        return;
+    }
+    /*Split at = sign*/
+    *equals = '\0';
+    char *name = trim_whitespace(line);
+    char *value = trim_whitespace(equals + 1);
+    /*Store variable*/
+    variable_set(name, value);
+}
+
+/*Add a command line to a rule's recipe*/
+static void add_recipe_line(rule_t *rule, const char *cmd)
+{
+    rule->recipe =
+        realloc(rule->recipe, sizeof(char *) * (rule->recipe_count + 2));
+    rule->recipe[rule->recipe_count] = string_duplicate(cmd);
+    rule->recipe[rule->recipe_count + 1] = NULL;
+    rule->recipe_count++;
+}
+
+/*Parse recipe lines (commands starting with tab)*/
+static void parse_recipe(FILE *f, rule_t *rule)
+{
     char *line = NULL;
     size_t len = 0;
-    size_t nread;
-    struct rule *current_rule = NULL;
-    if (!fp)
+    long pos = ftell(f); /*Save position before reading*/
+    while (getline(&line, &len, f) != -1)
     {
-        if (!is_first)
+        /*Recipe lines must start with tab*/
+        if (line[0] != '\t')
         {
-            fprintf(stderr, "minimake: %s: No such file or directory\n",
-                    filename);
-            /*Treat as target*/
-            struct rule *r = rule_create();
-            if (r)
-            {
-                r->target = str_dup(filename);
-                makefile_add_rule(mf, r);
-            }
+            fseek(f, pos, SEEK_SET); /*Rewind*/
+            break;
         }
-        else
+        /*Remove comments but keep the line*/
+        char *cleaned = remove_comment(line);
+        if (cleaned[0] == '\t')
         {
-            fprintf(stderr, "minimake: %s: No such file or directory\n",
-                    filename);
-            return 2;
+            add_recipe_line(rule, cleaned);
         }
-        return 0;
-    }
-    while ((nread = getline(&line, &len, fp)) != -1)
-    {
-        /*Remove newline*/
-        if (nread > 0 && line[nread - 1] == '\n')
-        {
-            line[nread - 1] = '\0';
-        }
-        /*Skip empty lines and comments*/
-        if (!current_rule && is_comment_line(line))
-        {
-            continue;
-        }
-        /*Check if this is a recipe line*/
-        if (is_recipe_line(line))
-        {
-            if (!current_rule)
-            {
-                fprintf(stderr,
-                        "minimake: *** command outside of rule. Stop.\n");
-                free(line);
-                fclose(fp);
-                return 2;
-            }
-            /*Parse command*/
-            char *cmd = line + 1;
-            int silent = 0;
-            /*Trim leading spaces after tab*/
-            while (isblank(*cmd))
-            {
-                cmd++;
-            }
-            /*Check for @ prefix*/
-            if (*cmd == '@')
-            {
-                silent = 1;
-                cmd++;
-            }
-            if (rule_add_command(current_rule, cmd, silent) != 0)
-            {
-                fprintf(stderr, "minimake: *** Memory error. Stop.\n");
-                free(line);
-                fclose(fp);
-                return 2;
-            }
-            continue;
-        }
-        /*Not a recipe line, so finish current rule*/
-        if (current_rule)
-        {
-            makefile_add_rule(mf, current_rule);
-            current_rule = NULL;
-        }
-        /*Skip comments and empty lines*/
-        if (is_comment_line(line))
-        {
-            continue;
-        }
-        /*Check for variable or rule*/
-        int colon_pos = find_first_unquoted(line, ':');
-        int equals_pos = find_first_unquoted(line, '=');
-        if (equals_pos != -1 && (colon_pos == -1 || equals_pos < colon_pos))
-        {
-            /*Variable definition*/
-            line[equals_pos] = '\0';
-            char *name = str_trim(line);
-            char *value = str_trim(line + equals_pos + 1);
-            if (strlen(name) > 0)
-            {
-                if (makefile_add_variable(mf, name, value) != 0)
-                {
-                    fprintf(stderr, "minimake: *** Memory error. Stop.\n");
-                    free(line);
-                    fclose(fp);
-                    return 2;
-                }
-            }
-        }
-        else if (colon_pos != -1)
-        {
-            /*Rule definition*/
-            line[colon_pos] = '\0';
-            char *target_str = str_trim(line);
-            char *deps_str = str_trim(line + colon_pos + 1);
-            if (strlen(target_str) == 0)
-            {
-                /*Ignore if empty target*/
-                continue;
-            }
-            current_rule = rule_create();
-            if (!current_rule)
-            {
-                fprintf(stderr, "minimake: *** Memory error. Stop.\n");
-                free(line);
-                fclose(fp);
-                return 2;
-            }
-            current_rule->target = str_dup(target_str);
-            current_rule->is_pattern = strchr(target_str, '%') != NULL;
-            /*Parse dependencies*/
-            char *dep = strtok(deps_str, " \t");
-            while (dep)
-            {
-                if (strlen(dep) > 0)
-                {
-                    rule_add_dependency(current_rule, dep);
-                }
-                dep = strtok(NULL, " \t");
-            }
-        }
-    }
-    /*Add last rule if any*/
-    if (current_rule)
-    {
-        makefile_add_rule(mf, current_rule);
+        pos = ftell(f);
     }
     free(line);
-    fclose(fp);
+}
+
+/*Parse a rule line (target: dependencies)*/
+static void parse_rule_line(char *line, FILE *f)
+{
+    char *colon = strchr(line, ':');
+    *colon = '\0';
+    /*Extract and expand target*/
+    char *target = variable_expand(trim_whitespace(line));
+    /*Ignore rules with empty target*/
+    if (strlen(target) == 0)
+    {
+        free(target);
+        return;
+    }
+    /*Create rule*/
+    rule_t *rule = rule_create(target);
+    free(target);
+    /*Parse dependencies*/
+    char *deps_str = trim_whitespace(colon + 1);
+    char *exp_deps = variable_expand(deps_str);
+    /*Split dependencies by whitespace*/
+    rule->dependencies = split_whitespace(exp_deps, &rule->dep_count);
+    free(exp_deps);
+    /*Parse recipe commands*/
+    parse_recipe(f, rule);
+    /*Add rule to list*/
+    rule_add(rule);
+    /*Store for pretty-print*/
+    parsed_rules = realloc(parsed_rules, sizeof(rule_t *) * (parsed_count + 1));
+    parsed_rules[parsed_count++] = rule;
+}
+
+/*Main parsing function - read and parse makefile*/
+int parse_makefile(const char *filename)
+{
+    FILE *f = fopen(filename, "r");
+    if (!f)
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s: No such file or directory", filename);
+        error_msg(msg);
+        return 2;
+    }
+    char *line = NULL;
+    size_t len = 0;
+    /*Read line by line*/
+    while (getline(&line, &len, f) != -1)
+    {
+        /*Remove comments*/
+        char *cleaned = remove_comment(line);
+        char *trimmed = trim_whitespace(cleaned);
+        /*Skip empty lines*/
+        if (strlen(trimmed) == 0)
+        {
+            continue;
+        }
+        /*Parse rule or variable*/
+        if (is_rule_line(trimmed))
+        {
+            parse_rule_line(trimmed, f);
+        }
+        else if (strchr(trimmed, '='))
+        {
+            parse_variable_def(trimmed);
+        }
+    }
+    free(line);
+    fclose(f);
     return 0;
 }
 
-void pretty_print_makefile(struct makefile *mf)
+/*Pretty-print the parsed makefile (for -p option)*/
+void pretty_print(void)
 {
-    int i;
-    int j;
-    /* Print variables */
-    if (mf->var_count > 0)
+    printf("# variables\n");
+    printf("\n# rules\n");
+    for (size_t i = 0; i < parsed_count; i++)
     {
-        printf("#variables\n");
-        for (i = 0; i < mf->var_count; i++)
+        rule_t *r = parsed_rules[i];
+        /*Print target and dependencies*/
+        printf("(%s):", r->target);
+        for (size_t j = 0; j < r->dep_count; j++)
         {
-            printf("'%s' = '%s'\n", mf->variables[i]->name,
-                   mf->variables[i]->value);
+            printf(" [%s]", r->dependencies[j]);
         }
-    }
-    /* Print rules */
-    if (mf->rule_count > 0)
-    {
-        printf("#rules\n");
-        for (i = 0; i < mf->rule_count; i++)
+        printf("\n");
+        /*Print recipe commands*/
+        for (size_t j = 0; j < r->recipe_count; j++)
         {
-            struct rule *r = mf->rules[i];
-            printf("(%s):", r->target);
-            for (j = 0; j < r->dep_count; j++)
-            {
-                printf(" [%s]", r->dependencies[j]);
-            }
-            printf("\n");
-            for (j = 0; j < r->cmd_count; j++)
-            {
-                if (r->commands[j]->silent)
-                {
-                    printf("'@%s'\n", r->commands[j]->text);
-                }
-                else
-                {
-                    printf("'%s'\n", r->commands[j]->text);
-                }
-            }
+            printf("'%s'\n", r->recipe[j]);
         }
     }
 }
